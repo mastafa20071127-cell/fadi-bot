@@ -7,7 +7,7 @@ RAPID_API_KEY = "78420a7cadmsh4c0b551fb859336p128e4ajsne5d9fd86d545"
 
 OWNER_ID = 8526612004
 BOT_USERNAME = "aajtt_bot"
-DEV_USERNAME = "@AAT8B"
+DEV_USERNAME = "aaj_t"
 FORCE_CHANNEL = "@marktt9"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")

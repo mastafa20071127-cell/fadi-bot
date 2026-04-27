@@ -3,12 +3,12 @@ import telebot, requests
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 TOKEN = "8331884456:AAFEKz7purqoRNh42aljNjrvnfz8nFztOd4"
-RAPID_API_KEY = "7c9ef53d4dmsh8490d4a7e6aa829p1d4e17jsn2ffd61fefcb8"
+RAPID_API_KEY = "78420a7cadmsh4c0b551fb859336p128e4ajsne5d9fd86d545"
 
 OWNER_ID = 8526612004
-BOT_USERNAME = "fadifvambot"
-DEV_USERNAME = "fvamv"
-FORCE_CHANNEL = "@fadifva"
+BOT_USERNAME = "aajtt_bot"
+DEV_USERNAME = "@AAT8B"
+FORCE_CHANNEL = "@marktt9"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 DATA_FILE = "data.json"

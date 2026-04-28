@@ -2,12 +2,12 @@ import os, json, re, random, time
 import telebot, requests
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-TOKEN = os.getenv("TOKEN", "حط_توكن_جديد_هنا")
-RAPID_API_KEY = os.getenv("RAPID_API_KEY", "حط_مفتاح_رابيد_هنا")
+TOKEN = os.getenv("TOKEN", "8331884456:AAFEKz7purqoRNh42aljNjrvnfz8nFztOd4")
+RAPID_API_KEY = os.getenv("RAPID_API_KEY", "78420a7cadmsh4c0b551fb859336p128e4ajsne5d9fd86d545")
 
-OWNER_ID = 8065884629
+OWNER_ID = 8526612004
 BOT_USERNAME = "fadifvambot"
-DEV_USERNAME = "fvamv"
+DEV_USERNAME = "aaj_t"
 FORCE_CHANNEL = "@fadifva"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")

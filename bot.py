@@ -6,9 +6,9 @@ TOKEN = os.getenv("TOKEN", "8331884456:AAFEKz7purqoRNh42aljNjrvnfz8nFztOd4")
 RAPID_API_KEY = os.getenv("RAPID_API_KEY", "78420a7cadmsh4c0b551fb859336p128e4ajsne5d9fd86d545")
 
 OWNER_ID = 8526612004
-BOT_USERNAME = "fadifvambot"
+BOT_USERNAME = "aajtt_bot"
 DEV_USERNAME = "aaj_t"
-FORCE_CHANNEL = "@fadifva"
+FORCE_CHANNEL = "@marktt9"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 DATA_FILE = "data.json"

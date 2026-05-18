@@ -1,314 +1,489 @@
 import os
 import json
 import time
-import base64
-import asyncio
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, Optional
-
-import aiohttp
+import traceback
+import requests
+import telebot
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import Message
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
+from telebot.types import Message
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LOG_CHAT_ID = int(os.getenv("LOG_CHAT_ID", "0"))
+
 MAX_WARNINGS = int(os.getenv("MAX_WARNINGS", "3"))
 STRICT_MODE = os.getenv("STRICT_MODE", "true").lower() == "true"
 DELETE_VIDEOS_FIRST = os.getenv("DELETE_VIDEOS_FIRST", "true").lower() == "true"
 DELETE_GIFS_FIRST = os.getenv("DELETE_GIFS_FIRST", "true").lower() == "true"
-MUTE_MINUTES = int(os.getenv("MUTE_MINUTES", "1440"))
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN missing in .env")
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY missing in .env")
-if not LOG_CHAT_ID:
-    raise RuntimeError("LOG_CHAT_ID missing in .env")
+DATA_FILE = "data.json"
 
-DATA_FILE = Path("warnings.json")
-TEMP_DIR = Path("temp")
-TEMP_DIR.mkdir(exist_ok=True)
-
-bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 
-def load_data() -> Dict[str, Any]:
-    if DATA_FILE.exists():
-        try:
-            return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
-
-
-def save_data(data: Dict[str, Any]) -> None:
-    DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def user_name(m: Message) -> str:
-    u = m.from_user
-    if not u:
-        return "Unknown"
-    name = (u.full_name or "Unknown").replace("<", "").replace(">", "")
-    if u.username:
-        name += f" (@{u.username})"
-    return name
-
-
-def now_text() -> str:
+def now_text():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-async def safe_delete(message: Message) -> bool:
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"warnings": {}, "spam": {}}
     try:
-        await message.delete()
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"warnings": {}, "spam": {}}
+
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def user_name(user):
+    name = user.first_name or "Unknown"
+    if user.last_name:
+        name += " " + user.last_name
+    if user.username:
+        name += f" (@{user.username})"
+    return name
+
+
+def log_admin(text):
+    try:
+        if LOG_CHAT_ID:
+            bot.send_message(LOG_CHAT_ID, text)
+    except Exception as e:
+        print("LOG ERROR:", e)
+
+
+def safe_delete(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
         return True
-    except Exception:
+    except Exception as e:
+        print("DELETE ERROR:", e)
         return False
 
 
-async def warn_and_maybe_mute(message: Message, reason: str) -> int:
+def warn_user(message, reason):
     data = load_data()
-    uid = str(message.from_user.id)
-    gid = str(message.chat.id)
-    data.setdefault(gid, {})
-    data[gid][uid] = data[gid].get(uid, 0) + 1
-    warns = data[gid][uid]
+    chat_id = str(message.chat.id)
+    user_id = str(message.from_user.id)
+
+    data.setdefault("warnings", {})
+    data["warnings"].setdefault(chat_id, {})
+    data["warnings"][chat_id].setdefault(user_id, 0)
+    data["warnings"][chat_id][user_id] += 1
+
+    warns = data["warnings"][chat_id][user_id]
     save_data(data)
 
+    text = f"""
+⚠️ <b>تم حذف محتوى مخالف</b>
+
+👤 العضو: {user_name(message.from_user)}
+🆔 الايدي: <code>{message.from_user.id}</code>
+📌 السبب: {reason}
+🔢 التحذيرات: {warns}/{MAX_WARNINGS}
+🕒 الوقت: {now_text()}
+"""
+
     try:
-        await message.answer(
-            f"⚠️ <b>تم حذف محتوى مخالف</b>\n"
-            f"👤 العضو: {user_name(message)}\n"
-            f"🚫 السبب: {reason}\n"
-            f"📌 التحذيرات: {warns}/{MAX_WARNINGS}"
-        )
-    except Exception:
+        bot.send_message(message.chat.id, text)
+    except:
         pass
+
+    log_admin(f"""
+🚨 <b>تقرير حماية</b>
+
+📍 الكروب: {message.chat.title}
+🆔 كروب ID: <code>{message.chat.id}</code>
+👤 العضو: {user_name(message.from_user)}
+🆔 العضو ID: <code>{message.from_user.id}</code>
+📌 السبب: {reason}
+🔢 التحذيرات: {warns}/{MAX_WARNINGS}
+🕒 الوقت: {now_text()}
+""")
 
     if warns >= MAX_WARNINGS:
-        try:
-            until = int(time.time()) + MUTE_MINUTES * 60
-            await bot.restrict_chat_member(
-                chat_id=message.chat.id,
-                user_id=message.from_user.id,
-                permissions={
-                    "can_send_messages": False,
-                    "can_send_audios": False,
-                    "can_send_documents": False,
-                    "can_send_photos": False,
-                    "can_send_videos": False,
-                    "can_send_video_notes": False,
-                    "can_send_voice_notes": False,
-                    "can_send_polls": False,
-                    "can_send_other_messages": False,
-                    "can_add_web_page_previews": False,
-                    "can_change_info": False,
-                    "can_invite_users": False,
-                    "can_pin_messages": False,
-                    "can_manage_topics": False,
-                },
-                until_date=until,
-            )
-            await message.answer(f"🔇 تم كتم العضو بسبب تكرار المخالفات {MAX_WARNINGS}/{MAX_WARNINGS}")
-        except Exception:
-            pass
-    return warns
+        mute_user(message, "وصل الحد الأعلى من التحذيرات")
 
 
-async def send_log(message: Message, media_type: str, reason: str, ai_result: Optional[Dict[str, Any]] = None, deleted: bool = True):
-    details = ""
-    if ai_result:
-        details = f"\n🧠 النتيجة: <code>{json.dumps(ai_result, ensure_ascii=False)[:900]}</code>"
-
-    text = (
-        f"🚫 <b>تقرير حماية</b>\n\n"
-        f"👤 الاسم: {user_name(message)}\n"
-        f"🆔 الآيدي: <code>{message.from_user.id if message.from_user else 'unknown'}</code>\n"
-        f"📍 الكروب: {message.chat.title or message.chat.id}\n"
-        f"📌 النوع: {media_type}\n"
-        f"🛡️ الإجراء: {'حذف' if deleted else 'مراقبة'}\n"
-        f"🚨 السبب: {reason}\n"
-        f"🕒 الوقت: {now_text()}"
-        f"{details}"
-    )
+def mute_user(message, reason):
     try:
-        await bot.send_message(LOG_CHAT_ID, text)
-    except Exception:
+        until_date = datetime.now() + timedelta(hours=24)
+        bot.restrict_chat_member(
+            message.chat.id,
+            message.from_user.id,
+            until_date=until_date,
+            can_send_messages=False,
+            can_send_audios=False,
+            can_send_documents=False,
+            can_send_photos=False,
+            can_send_videos=False,
+            can_send_video_notes=False,
+            can_send_voice_notes=False,
+            can_send_polls=False,
+            can_send_other_messages=False,
+            can_add_web_page_previews=False,
+            can_change_info=False,
+            can_invite_users=True,
+            can_pin_messages=False
+        )
+
+        bot.send_message(
+            message.chat.id,
+            f"🔇 تم كتم {user_name(message.from_user)} لمدة 24 ساعة.\n📌 السبب: {reason}"
+        )
+
+        log_admin(f"""
+🔇 <b>تم كتم عضو</b>
+
+👤 العضو: {user_name(message.from_user)}
+🆔 الايدي: <code>{message.from_user.id}</code>
+📌 السبب: {reason}
+🕒 الوقت: {now_text()}
+""")
+    except Exception as e:
+        print("MUTE ERROR:", e)
+
+
+def anti_spam_media(message):
+    data = load_data()
+    chat_id = str(message.chat.id)
+    user_id = str(message.from_user.id)
+    key = f"{chat_id}:{user_id}"
+
+    data.setdefault("spam", {})
+    timestamps = data["spam"].get(key, [])
+
+    current = time.time()
+    timestamps = [t for t in timestamps if current - t < 10]
+    timestamps.append(current)
+
+    data["spam"][key] = timestamps
+    save_data(data)
+
+    if len(timestamps) >= 4:
+        safe_delete(message)
+        warn_user(message, "إرسال وسائط بسرعة عالية / سبام")
+        return True
+
+    return False
+
+
+def openai_check_image(image_url):
+    try:
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        prompt = """
+أنت نظام حماية صارم للكروبات.
+افحص الصورة بدقة.
+
+اعتبرها مخالفة إذا تحتوي على:
+- عري أو إباحية أو إيحاء جنسي قوي
+- دم واضح أو جروح قوية
+- جثث أو موت
+- انتحار أو إيذاء نفس
+- تفجير أو إرهاب أو عنف دموي
+- تعذيب أو مشاهد صادمة
+- أطفال في سياق جنسي أو خطر
+
+أجب فقط بصيغة JSON:
+{
+  "violation": true أو false,
+  "reason": "سبب مختصر بالعربية",
+  "confidence": رقم من 0 إلى 100
+}
+"""
+
+        payload = {
+            "model": "gpt-4.1-mini",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {"type": "input_image", "image_url": image_url}
+                    ]
+                }
+            ]
+        }
+
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers=headers,
+            json=payload,
+            timeout=20
+        )
+
+        text = r.text
+        print("OPENAI:", text[:1000])
+
+        low = text.lower()
+
+        bad_words = [
+            '"violation": true',
+            '"violation":true',
+            "sexual",
+            "nudity",
+            "porn",
+            "gore",
+            "blood",
+            "corpse",
+            "dead body",
+            "self-harm",
+            "suicide",
+            "violence",
+            "terror",
+            "explosion",
+            "نعم",
+            "مخالفة",
+            "إباحية",
+            "اباحية",
+            "دم",
+            "جثة",
+            "انتحار",
+            "عنف",
+            "تفجير"
+        ]
+
+        if any(w in low for w in bad_words):
+            return True, "محتوى مخالف حسب فحص الذكاء"
+
+        return False, "سليم"
+
+    except Exception as e:
+        print("OPENAI ERROR:", e)
+        traceback.print_exc()
+
+        if STRICT_MODE:
+            return True, "تعذر فحص الصورة - وضع الحماية القصوى"
+        return False, "تعذر الفحص"
+
+
+def get_file_url(file_id):
+    file_info = bot.get_file(file_id)
+    return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+
+
+@bot.message_handler(commands=["start"])
+def start_cmd(message):
+    bot.reply_to(
+        message,
+        "✅ بوت الحماية شغال.\n\nارفعني مشرف وفعل صلاحية حذف الرسائل حتى أحمي الكروب."
+    )
+
+
+@bot.message_handler(commands=["ping"])
+def ping_cmd(message):
+    bot.reply_to(message, "✅ البوت شغال ويفحص الرسائل.")
+
+
+@bot.message_handler(commands=["warns"])
+def warns_cmd(message):
+    data = load_data()
+    chat_id = str(message.chat.id)
+
+    if not message.reply_to_message:
+        bot.reply_to(message, "رد على العضو واكتب /warns")
+        return
+
+    user_id = str(message.reply_to_message.from_user.id)
+    warns = data.get("warnings", {}).get(chat_id, {}).get(user_id, 0)
+    bot.reply_to(message, f"🔢 تحذيرات العضو: {warns}/{MAX_WARNINGS}")
+
+
+@bot.message_handler(commands=["resetwarns"])
+def reset_warns_cmd(message):
+    if not message.reply_to_message:
+        bot.reply_to(message, "رد على العضو واكتب /resetwarns")
+        return
+
+    data = load_data()
+    chat_id = str(message.chat.id)
+    user_id = str(message.reply_to_message.from_user.id)
+
+    try:
+        data["warnings"][chat_id][user_id] = 0
+        save_data(data)
+    except:
         pass
 
-
-async def download_file(file_id: str, suffix: str) -> Path:
-    tg_file = await bot.get_file(file_id)
-    out = TEMP_DIR / f"{file_id}_{int(time.time()*1000)}{suffix}"
-    await bot.download_file(tg_file.file_path, destination=out)
-    return out
+    bot.reply_to(message, "✅ تم تصفير تحذيرات العضو.")
 
 
-def image_to_data_url(path: Path) -> str:
-    raw = path.read_bytes()
-    b64 = base64.b64encode(raw).decode("utf-8")
-    # Telegram stickers may be webp; OpenAI supports common image formats. PNG/JPEG/WebP usually OK.
-    ext = path.suffix.lower().replace(".", "") or "jpeg"
-    mime = "jpeg" if ext in ["jpg", "jpeg"] else ext
-    return f"data:image/{mime};base64,{b64}"
+@bot.message_handler(content_types=["video"])
+def handle_video(message: Message):
+    print("RECEIVED VIDEO")
+    if anti_spam_media(message):
+        return
+
+    if DELETE_VIDEOS_FIRST or STRICT_MODE:
+        safe_delete(message)
+        warn_user(message, "الفيديوهات ممنوعة في وضع الحماية القصوى")
+        return
 
 
-async def check_image_ai(path: Path) -> Dict[str, Any]:
-    data_url = image_to_data_url(path)
-    prompt = (
-        "You are a strict Telegram group safety moderator. Analyze this image. "
-        "Return ONLY valid compact JSON with keys: unsafe(boolean), categories(array), severity(0-10), reason_ar(string). "
-        "Mark unsafe=true for nudity, sexual content, porn, graphic violence, blood/gore, corpse, suicide/self-harm, explosion/terror, torture, extreme injury, or hateful extremist imagery. "
-        "If uncertain but likely dangerous, mark unsafe=true. Arabic reason only in reason_ar."
-    )
-    payload = {
-        "model": MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": data_url}},
-            ],
-        }],
-        "temperature": 0,
-        "max_tokens": 220,
-    }
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
-        async with session.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers) as resp:
-            text = await resp.text()
-            if resp.status >= 400:
-                return {"unsafe": STRICT_MODE, "categories": ["api_error"], "severity": 10 if STRICT_MODE else 0, "reason_ar": f"خطأ فحص الذكاء: {resp.status}"}
-            try:
-                content = json.loads(text)["choices"][0]["message"]["content"].strip()
-                content = content.replace("```json", "").replace("```", "").strip()
-                return json.loads(content)
-            except Exception:
-                return {"unsafe": STRICT_MODE, "categories": ["parse_error"], "severity": 10 if STRICT_MODE else 0, "reason_ar": "تعذر قراءة نتيجة الفحص"}
+@bot.message_handler(content_types=["animation"])
+def handle_animation(message: Message):
+    print("RECEIVED GIF")
+    if anti_spam_media(message):
+        return
+
+    if DELETE_GIFS_FIRST or STRICT_MODE:
+        safe_delete(message)
+        warn_user(message, "GIF / متحرك ممنوع في وضع الحماية القصوى")
+        return
 
 
-async def process_image_message(message: Message, file_id: str, suffix: str, media_type: str):
-    path = None
+@bot.message_handler(content_types=["video_note"])
+def handle_video_note(message: Message):
+    print("RECEIVED VIDEO NOTE")
+    if anti_spam_media(message):
+        return
+
+    safe_delete(message)
+    warn_user(message, "رسالة فيديو دائرية ممنوعة في وضع الحماية القصوى")
+
+
+@bot.message_handler(content_types=["sticker"])
+def handle_sticker(message: Message):
+    print("RECEIVED STICKER")
+    if anti_spam_media(message):
+        return
+
     try:
-        path = await download_file(file_id, suffix)
-        result = await check_image_ai(path)
-        unsafe = bool(result.get("unsafe")) or int(result.get("severity", 0)) >= 7
-        reason = result.get("reason_ar") or "محتوى مخالف"
-        if unsafe:
-            deleted = await safe_delete(message)
-            await warn_and_maybe_mute(message, reason)
-            await send_log(message, media_type, reason, result, deleted)
+        if message.sticker.is_animated or message.sticker.is_video:
+            safe_delete(message)
+            warn_user(message, "ملصق متحرك/فيديو ممنوع")
+            return
+
+        file_url = get_file_url(message.sticker.file_id)
+        bad, reason = openai_check_image(file_url)
+
+        if bad:
+            safe_delete(message)
+            warn_user(message, reason)
+
     except Exception as e:
-        # strict mode: if checking fails, delete media to protect the group
+        print("STICKER ERROR:", e)
         if STRICT_MODE:
-            deleted = await safe_delete(message)
-            reason = f"فشل الفحص وتم الحذف للحماية: {type(e).__name__}"
-            await warn_and_maybe_mute(message, reason)
-            await send_log(message, media_type, reason, {"error": str(e)[:300]}, deleted)
-    finally:
-        if path and path.exists():
-            try:
-                path.unlink()
-            except Exception:
-                pass
+            safe_delete(message)
+            warn_user(message, "تعذر فحص الملصق - وضع الحماية القصوى")
 
 
-@dp.message(Command("start"))
-async def start_cmd(message: Message):
-    await message.answer(
-        "🛡️ بوت الحماية شغال\n\n"
-        "يفحص الصور والملصقات الثابتة بالذكاء.\n"
-        "ويحذف الفيديو/GIF/الملصقات المتحركة فوراً بأقصى حماية."
-    )
+@bot.message_handler(content_types=["photo"])
+def handle_photo(message: Message):
+    print("RECEIVED PHOTO")
 
-
-@dp.message(Command("warns"))
-async def warns_cmd(message: Message):
-    data = load_data()
-    gid = str(message.chat.id)
-    if not data.get(gid):
-        await message.answer("ماكو تحذيرات بهذا الكروب.")
+    if anti_spam_media(message):
         return
-    lines = ["📌 تحذيرات الكروب:"]
-    for uid, count in sorted(data[gid].items(), key=lambda x: x[1], reverse=True)[:20]:
-        lines.append(f"<code>{uid}</code> : {count}")
-    await message.answer("\n".join(lines))
+
+    try:
+        file_id = message.photo[-1].file_id
+        file_url = get_file_url(file_id)
+
+        bad, reason = openai_check_image(file_url)
+
+        if bad:
+            safe_delete(message)
+            warn_user(message, reason)
+        else:
+            print("PHOTO SAFE")
+
+    except Exception as e:
+        print("PHOTO ERROR:", e)
+        traceback.print_exc()
+
+        if STRICT_MODE:
+            safe_delete(message)
+            warn_user(message, "تعذر فحص الصورة - وضع الحماية القصوى")
 
 
-@dp.message(Command("resetwarns"))
-async def reset_warns_cmd(message: Message):
-    member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-    if member.status not in ["creator", "administrator"]:
+@bot.message_handler(content_types=["document"])
+def handle_document(message: Message):
+    print("RECEIVED DOCUMENT")
+    if anti_spam_media(message):
         return
-    data = load_data()
-    data[str(message.chat.id)] = {}
-    save_data(data)
-    await message.answer("✅ تم تصفير التحذيرات لهذا الكروب.")
 
+    file_name = message.document.file_name or ""
+    mime = message.document.mime_type or ""
 
-@dp.message(F.photo)
-async def on_photo(message: Message):
-    # largest photo version
-    photo = message.photo[-1]
-    asyncio.create_task(process_image_message(message, photo.file_id, ".jpg", "صورة"))
+    dangerous = [
+        "image/",
+        "video/",
+        "application/x-msdownload",
+        "application/octet-stream"
+    ]
 
-
-@dp.message(F.sticker)
-async def on_sticker(message: Message):
-    st = message.sticker
-    if st.is_animated or st.is_video:
-        deleted = await safe_delete(message)
-        reason = "ملصق متحرك/فيديو محذوف فوراً بأقصى حماية"
-        await warn_and_maybe_mute(message, reason)
-        await send_log(message, "ملصق متحرك", reason, None, deleted)
+    if STRICT_MODE and any(mime.startswith(x) for x in dangerous):
+        safe_delete(message)
+        warn_user(message, f"ملف ممنوع في وضع الحماية القصوى: {mime}")
         return
-    asyncio.create_task(process_image_message(message, st.file_id, ".webp", "ملصق ثابت"))
 
 
-@dp.message(F.video)
-async def on_video(message: Message):
-    if DELETE_VIDEOS_FIRST:
-        deleted = await safe_delete(message)
-        reason = "الفيديوهات ممنوعة ومحذوفة فوراً بأقصى حماية"
-        await warn_and_maybe_mute(message, reason)
-        await send_log(message, "فيديو", reason, None, deleted)
+@bot.message_handler(content_types=["text"])
+def handle_text(message: Message):
+    text = message.text or ""
+
+    bad_links = [
+        "porn",
+        "xxx",
+        "xvideos",
+        "xnxx",
+        "onlyfans",
+        "t.me/+",
+        "telegram.me/+"
+    ]
+
+    if any(x in text.lower() for x in bad_links):
+        safe_delete(message)
+        warn_user(message, "رابط أو كلمة ممنوعة")
+        return
 
 
-@dp.message(F.animation)
-async def on_animation(message: Message):
-    if DELETE_GIFS_FIRST:
-        deleted = await safe_delete(message)
-        reason = "GIF/متحرك ممنوع ومحذوف فوراً بأقصى حماية"
-        await warn_and_maybe_mute(message, reason)
-        await send_log(message, "GIF/متحرك", reason, None, deleted)
+def startup_check():
+    print("====================================")
+    print("Bot Started")
+    print("BOT_TOKEN:", "OK" if BOT_TOKEN else "MISSING")
+    print("OPENAI_API_KEY:", "OK" if OPENAI_API_KEY else "MISSING")
+    print("LOG_CHAT_ID:", LOG_CHAT_ID)
+    print("STRICT_MODE:", STRICT_MODE)
+    print("DELETE_VIDEOS_FIRST:", DELETE_VIDEOS_FIRST)
+    print("DELETE_GIFS_FIRST:", DELETE_GIFS_FIRST)
+    print("====================================")
 
-
-@dp.message(F.video_note)
-async def on_video_note(message: Message):
-    deleted = await safe_delete(message)
-    reason = "رسالة فيديو دائرية محذوفة فوراً بأقصى حماية"
-    await warn_and_maybe_mute(message, reason)
-    await send_log(message, "Video note", reason, None, deleted)
-
-
-async def main():
-    print("Protection bot started...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    try:
+        log_admin("✅ بوت الحماية اشتغل بنجاح.")
+    except:
+        pass
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    startup_check()
+
+    while True:
+        try:
+            bot.infinity_polling(
+                skip_pending=True,
+                timeout=20,
+                long_polling_timeout=20,
+                allowed_updates=[
+                    "message",
+                    "edited_message",
+                    "chat_member",
+                    "my_chat_member"
+                ]
+            )
+        except Exception as e:
+            print("POLLING ERROR:", e)
+            traceback.print_exc()
+            time.sleep(5)

@@ -1,4 +1,4 @@
-import os, time, json, requests, traceback
+import os, time, requests, traceback
 from datetime import datetime, timedelta
 import telebot
 
@@ -11,9 +11,6 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 warnings = {}
 spam = {}
-
-BAD_WORDS = ["اباحي","سكس","نيك","كس","زب","طيز","شرموطة","منيوج","porn","xxx"]
-BAD_LINKS = ["porn","xxx","xvideos","xnxx","onlyfans","t.me/+","telegram.me/+"]
 
 def now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -36,8 +33,83 @@ def delete_msg(m):
         print("DELETE ERROR:", e)
         return False
 
-def add_warn(m, reason):
+def is_spam(m):
     key = f"{m.chat.id}:{m.from_user.id}"
+    t = time.time()
+    spam[key] = [x for x in spam.get(key, []) if t - x < 7]
+    spam[key].append(t)
+    return len(spam[key]) >= 6
+
+def smart_restrict(m, media_type):
+    try:
+        perms = {
+            "can_send_messages": True,
+            "can_send_audios": True,
+            "can_send_documents": True,
+            "can_send_photos": True,
+            "can_send_videos": True,
+            "can_send_video_notes": True,
+            "can_send_voice_notes": True,
+            "can_send_polls": True,
+            "can_send_other_messages": True,
+            "can_add_web_page_previews": True,
+            "can_change_info": False,
+            "can_invite_users": True,
+            "can_pin_messages": False,
+        }
+
+        reason = "وسائط"
+
+        if media_type == "photo":
+            perms["can_send_photos"] = False
+            reason = "الصور"
+
+        elif media_type == "video":
+            perms["can_send_videos"] = False
+            perms["can_send_video_notes"] = False
+            reason = "الفيديوهات"
+
+        elif media_type == "sticker":
+            perms["can_send_other_messages"] = False
+            reason = "الملصقات"
+
+        elif media_type == "gif":
+            perms["can_send_other_messages"] = False
+            reason = "المتحركات GIF"
+
+        elif media_type == "document":
+            perms["can_send_documents"] = False
+            reason = "الملفات"
+
+        until = datetime.now() + timedelta(hours=24)
+
+        bot.restrict_chat_member(
+            m.chat.id,
+            m.from_user.id,
+            until_date=until,
+            **perms
+        )
+
+        bot.send_message(
+            m.chat.id,
+            f"🔇 تم منع {name(m.from_user)} من إرسال {reason} لمدة 24 ساعة"
+        )
+
+        log(f"""
+🔇 <b>منع ذكي</b>
+
+👤 العضو: {name(m.from_user)}
+🆔 الايدي: <code>{m.from_user.id}</code>
+📌 المنع: {reason}
+⏱ المدة: 24 ساعة
+🕒 الوقت: {now()}
+""")
+
+    except Exception as e:
+        print("SMART RESTRICT ERROR:", e)
+
+def add_warn(m, reason, media_type):
+    key = f"{m.chat.id}:{m.from_user.id}:{media_type}"
     warnings[key] = warnings.get(key, 0) + 1
     w = warnings[key]
 
@@ -63,38 +135,14 @@ def add_warn(m, reason):
 👤 العضو: {name(m.from_user)}
 🆔 الايدي: <code>{m.from_user.id}</code>
 📌 السبب: {reason}
+📦 النوع: {media_type}
 ⚠️ التحذيرات: {w}/{MAX_WARNINGS}
 🕒 الوقت: {now()}
 """)
 
     if w >= MAX_WARNINGS:
-        mute_user(m)
-
-def mute_user(m):
-    try:
-        until = datetime.now() + timedelta(hours=24)
-        bot.restrict_chat_member(
-            m.chat.id,
-            m.from_user.id,
-            until_date=until,
-            can_send_messages=False,
-            can_send_photos=False,
-            can_send_videos=False,
-            can_send_audios=False,
-            can_send_documents=False,
-            can_send_other_messages=False,
-            can_add_web_page_previews=False
-        )
-        bot.send_message(m.chat.id, f"🔇 تم كتم {name(m.from_user)} لمدة 24 ساعة")
-    except Exception as e:
-        print("MUTE ERROR:", e)
-
-def is_spam(m):
-    key = f"{m.chat.id}:{m.from_user.id}"
-    t = time.time()
-    spam[key] = [x for x in spam.get(key, []) if t - x < 7]
-    spam[key].append(t)
-    return len(spam[key]) >= 6
+        smart_restrict(m, media_type)
+        warnings[key] = 0
 
 def file_url(file_id):
     info = bot.get_file(file_id)
@@ -116,9 +164,17 @@ def ai_check_image(url):
                         "type": "input_text",
                         "text": """
 افحص الصورة كحماية كروب.
-إذا تحتوي على عري، إباحية، إيحاء جنسي قوي، دم، جثث، انتحار، تفجير، تعذيب، عنف شديد أجب فقط JSON:
+مخالفة فقط إذا تحتوي على:
+- عري أو إباحية
+- إيحاء جنسي واضح
+- دم أو جثث
+- انتحار أو إيذاء نفس
+- تفجير أو إرهاب
+- تعذيب أو عنف شديد
+
+أجب فقط JSON:
 {"bad": true, "reason": "السبب"}
-إذا سليمة:
+أو:
 {"bad": false, "reason": "safe"}
 """
                     },
@@ -145,7 +201,8 @@ def ai_check_image(url):
             '"bad":true',
             "sexual", "nudity", "porn", "gore", "blood",
             "corpse", "suicide", "violence", "explosion",
-            "إباحية", "اباحية", "عري", "دم", "جثة", "انتحار", "تفجير", "عنف"
+            "إباحية", "اباحية", "عري", "دم", "جثة",
+            "انتحار", "تفجير", "عنف", "تعذيب"
         ]
 
         return any(x in txt for x in bad_keys)
@@ -153,26 +210,15 @@ def ai_check_image(url):
     except Exception as e:
         print("AI ERROR:", e)
         traceback.print_exc()
-        return True  # أقصى حماية: إذا فشل الفحص نحذف
+        return True
 
 @bot.message_handler(commands=["start"])
 def start(m):
-    bot.reply_to(m, "✅ بوت الحماية شغال\nارفعني مشرف وفعل حذف الرسائل والحظر.")
+    bot.reply_to(m, "✅ بوت الحماية شغال\nيفحص الصور والملصقات ويحذف الفيديوهات والمتحركات بسرعة.")
 
 @bot.message_handler(commands=["ping"])
 def ping(m):
     bot.reply_to(m, "🏓 Pong - الحماية شغالة")
-
-@bot.message_handler(content_types=["new_chat_members"])
-def new_member(m):
-    for u in m.new_chat_members:
-        if u.is_bot:
-            delete_msg(m)
-            log(f"🤖 تم منع بوت من الدخول: {name(u)}")
-            try:
-                bot.ban_chat_member(m.chat.id, u.id)
-            except:
-                pass
 
 @bot.message_handler(content_types=["photo"])
 def photo(m):
@@ -180,7 +226,7 @@ def photo(m):
 
     if is_spam(m):
         delete_msg(m)
-        add_warn(m, "سبام وسائط")
+        add_warn(m, "سبام صور", "photo")
         return
 
     try:
@@ -189,30 +235,13 @@ def photo(m):
 
         if bad:
             delete_msg(m)
-            add_warn(m, "صورة مخالفة حسب فحص الذكاء")
+            add_warn(m, "صورة مخالفة حسب فحص الذكاء", "photo")
         else:
             print("PHOTO SAFE")
+
     except:
         delete_msg(m)
-        add_warn(m, "تعذر فحص الصورة - حذف احتياطي")
-
-@bot.message_handler(content_types=["video"])
-def video(m):
-    print("VIDEO RECEIVED")
-    delete_msg(m)
-    add_warn(m, "الفيديوهات ممنوعة في الحماية القصوى")
-
-@bot.message_handler(content_types=["animation"])
-def gif(m):
-    print("GIF RECEIVED")
-    delete_msg(m)
-    add_warn(m, "GIF / متحرك ممنوع في الحماية القصوى")
-
-@bot.message_handler(content_types=["video_note"])
-def video_note(m):
-    print("VIDEO NOTE RECEIVED")
-    delete_msg(m)
-    add_warn(m, "رسالة فيديو دائرية ممنوعة")
+        add_warn(m, "تعذر فحص الصورة - حذف احتياطي", "photo")
 
 @bot.message_handler(content_types=["sticker"])
 def sticker(m):
@@ -220,13 +249,13 @@ def sticker(m):
 
     if is_spam(m):
         delete_msg(m)
-        add_warn(m, "سبام ملصقات")
+        add_warn(m, "سبام ملصقات", "sticker")
         return
 
     try:
         if m.sticker.is_animated or m.sticker.is_video:
             delete_msg(m)
-            add_warn(m, "ملصق متحرك/فيديو ممنوع")
+            add_warn(m, "ملصق متحرك/فيديو ممنوع", "sticker")
             return
 
         url = file_url(m.sticker.file_id)
@@ -234,42 +263,62 @@ def sticker(m):
 
         if bad:
             delete_msg(m)
-            add_warn(m, "ملصق مخالف حسب فحص الذكاء")
+            add_warn(m, "ملصق مخالف حسب فحص الذكاء", "sticker")
+        else:
+            print("STICKER SAFE")
+
     except:
         delete_msg(m)
-        add_warn(m, "تعذر فحص الملصق - حذف احتياطي")
+        add_warn(m, "تعذر فحص الملصق - حذف احتياطي", "sticker")
+
+@bot.message_handler(content_types=["video"])
+def video(m):
+    print("VIDEO RECEIVED")
+    delete_msg(m)
+    add_warn(m, "الفيديوهات ممنوعة في الحماية القصوى", "video")
+
+@bot.message_handler(content_types=["animation"])
+def gif(m):
+    print("GIF RECEIVED")
+    delete_msg(m)
+    add_warn(m, "GIF / متحرك ممنوع في الحماية القصوى", "gif")
+
+@bot.message_handler(content_types=["video_note"])
+def video_note(m):
+    print("VIDEO NOTE RECEIVED")
+    delete_msg(m)
+    add_warn(m, "رسالة فيديو دائرية ممنوعة", "video")
 
 @bot.message_handler(content_types=["document"])
 def document(m):
     print("DOCUMENT RECEIVED")
+
     mime = m.document.mime_type or ""
 
-    if mime.startswith("video/") or mime.startswith("image/"):
+    if mime.startswith("image/"):
         delete_msg(m)
-        add_warn(m, f"ملف وسائط ممنوع: {mime}")
+        add_warn(m, f"ملف صورة ممنوع: {mime}", "document")
+        return
+
+    if mime.startswith("video/"):
+        delete_msg(m)
+        add_warn(m, f"ملف فيديو ممنوع: {mime}", "document")
+        return
+
+@bot.message_handler(content_types=["new_chat_members"])
+def new_member(m):
+    for u in m.new_chat_members:
+        if u.is_bot:
+            delete_msg(m)
+            try:
+                bot.ban_chat_member(m.chat.id, u.id)
+            except:
+                pass
 
 @bot.message_handler(content_types=["text"])
 def text(m):
-    txt = (m.text or "").lower()
-
-    if is_spam(m):
-        delete_msg(m)
-        add_warn(m, "سبام رسائل")
-        return
-
-    if any(w in txt for w in BAD_WORDS):
-        delete_msg(m)
-        add_warn(m, "كلمات ممنوعة")
-        return
-
-    if any(l in txt for l in BAD_LINKS):
-        delete_msg(m)
-        add_warn(m, "رابط ممنوع")
-        return
-
-    if m.forward_from or m.forward_from_chat:
-        delete_msg(m)
-        add_warn(m, "التحويل ممنوع")
+    # لا يحذف كلمات نهائياً
+    pass
 
 print("================================")
 print("Bot Started Successfully")
@@ -279,7 +328,7 @@ print("LOG_CHAT_ID:", LOG_CHAT_ID)
 print("================================")
 
 try:
-    log("✅ بوت الحماية اشتغل بنجاح")
+    log("✅ بوت الحماية الذكي اشتغل بنجاح")
 except:
     pass
 

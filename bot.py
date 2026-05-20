@@ -11,8 +11,8 @@ from telebot.types import (
     KeyboardButton
 )
 
-TOKEN = "حط_توكن_البوت"
-ADMIN_ID = 123456789  # حط ايديك هنا
+TOKEN = "8709748632:AAGI2l0Q3iYVWUMYzHLZ0WwNv8f4NUx5NFY"
+ADMIN_ID = 8065884629  # حط ايديك هنا
 CHANNEL_LINK = "https://t.me/OxfordMul7deen"
 
 bot = telebot.TeleBot(TOKEN)

@@ -11,7 +11,7 @@ from telebot.types import (
     KeyboardButton
 )
 
-TOKEN = "8709748632:AAGI2l0Q3iYVWUMYzHLZ0WwNv8f4NUx5NFY"
+TOKEN = "8709748632:AAHP2j2cTbTHJAta5omYv9p-p0h7Z_QYx-E"
 ADMIN_ID = 8065884629  # حط ايديك هنا
 CHANNEL_LINK = "https://t.me/OxfordMul7deen"
 
